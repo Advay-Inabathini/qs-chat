@@ -1,43 +1,84 @@
 import socket
 import threading
+from kyber import Kyber512
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
 
-import rsa
+# Function to encrypt a message using AES with the shared key
+def encrypt(shared_key, plaintext):
+    cipher = AES.new(shared_key, AES.MODE_ECB)
+    padded_plaintext = pad(plaintext.encode(), AES.block_size)
+    ciphertext = cipher.encrypt(padded_plaintext)
+    return ciphertext
 
-public_key, private_key = rsa.newkeys(1024)
-public_partner = None
+# Function to decrypt a message using AES with the shared key
+def decrypt(shared_key, ciphertext):
+    cipher = AES.new(shared_key, AES.MODE_ECB)
+    padded_plaintext = cipher.decrypt(ciphertext)
+    plaintext = unpad(padded_plaintext, AES.block_size)
+    return plaintext.decode()
 
-choice = input("host(1) or connect(2)?: ")
+def receive_messages(client, shared_key):
+    while True:
+        encrypted_message = client.recv(1024)
+        message = decrypt(shared_key, encrypted_message)
+        print("Partner:", message)
 
-if choice == "1":
+def send_messages(client, shared_key):
+    while True:
+        message = input("You: ")
+        encrypted_message = encrypt(shared_key, message)
+        client.send(encrypted_message)
+
+# ... (host and connect functions remain the same as before) ...
+
+def host():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("10.29.153.168", 9999))
+    server.bind(("127.0.0.1", 9999))
     server.listen()
-
     client, _ = server.accept()
-    client.send(public_key.save_pkcs1("PEM"))
-    public_partner = rsa.PublicKey.load_pkcs1(client.recv(1024))
 
-elif choice == "2":
+    # Generate a key pair for key exchange
+    pk, sk = Kyber512.keygen()
+
+    # Send the public key to the client
+    client.send(pk)
+
+    # Receive the ciphertext from the client
+    c = client.recv(1024)
+
+    # Decapsulate the shared key using the ciphertext and private key
+    shared_key = Kyber512.dec(c, sk)
+    print("Shared Key (Server):", shared_key)
+
+    threading.Thread(target=receive_messages, args=(client, shared_key)).start()
+    threading.Thread(target=send_messages, args=(client, shared_key)).start()
+
+def connect():
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect(("10.29.153.168", 9999))
+    client.connect(("127.0.0.1", 9999))
 
-    public_partner = rsa.PublicKey.load_pkcs1(client.recv(1024))
-    client.send(public_key.save_pkcs1("PEM"))
+    # Receive the public key from the server
+    pk = client.recv(1024)
 
-else:
-    exit()
+    # Encapsulate the shared key using the public key
+    c, shared_key = Kyber512.enc(pk)
+    print("Shared Key (Client):", shared_key)
 
-def sending_messages(c):
-    while True:
-        message = input("")
-        c.send(rsa.encrypt(message.encode(), public_partner))
-        print("You: "+ message)
+    # Send the ciphertext to the server
+    client.send(c)
 
-def receiving_messages(c):
-    while True:
-        print("Partner: " + rsa.decrypt(c.recv(1024), private_key).decode())
+    threading.Thread(target=receive_messages, args=(client, shared_key)).start()
+    threading.Thread(target=send_messages, args=(client, shared_key)).start()
 
-threading.Thread(target=sending_messages, args=(client,)).start()
-threading.Thread(target=receiving_messages, args=(client,)).start()
+def main():
+    choice = input("Host(1) or Connect(2)?: ")
+    if choice == "1":
+        host()
+    elif choice == "2":
+        connect()
+    else:
+        exit()
 
-
+if __name__ == "__main__":
+    main()
